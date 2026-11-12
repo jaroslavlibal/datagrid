@@ -41,6 +41,14 @@ export class AutosubmitPlugin implements DatagridPlugin {
 	initPerPage(datagrid: Datagrid) {
 		datagrid.el.querySelectorAll<HTMLSelectElement>(`select[${AutosubmitPerPageAttribute}]`)
 			.forEach(pageSelectEl => {
+				// The ajax client dispatches complete after every request of the page, also one that does not
+				// redraw this datagrid, so the select may still be the one that has its listener already.
+				// The key differs from the one of initChange(), a select may have both attributes.
+				if (pageSelectEl.dataset.perPageListenersAttached === "true") {
+					return;
+				}
+				pageSelectEl.dataset.perPageListenersAttached = "true";
+
 				pageSelectEl.addEventListener("change", () => {
 					let inputEl = pageSelectEl.parentElement?.querySelector("input[type=submit]");
 					if (!inputEl) {

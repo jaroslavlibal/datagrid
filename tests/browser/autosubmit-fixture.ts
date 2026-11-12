@@ -6,5 +6,7 @@ const ajax = new NajaAjax(naja);
 ajax.onInit();
 naja.initialize();
 const plugin = new AutosubmitPlugin(300);
-plugin.onDatagridInit({el: document.querySelector("#grid")!, ajax} as any);
-Object.assign(window, {naja, ajax, plugin});
+// The same object is passed on a reinitialization, as the real Datagrid passes itself.
+const datagrid = {el: document.querySelector("#grid")!, ajax} as any;
+plugin.onDatagridInit(datagrid);
+Object.assign(window, {naja, ajax, plugin, datagrid});

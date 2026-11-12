@@ -4,14 +4,15 @@ import {fileURLToPath} from 'node:url';
 const bundlePath = fileURLToPath(new URL('../temp/browser/autosubmit.js', import.meta.url));
 const DELAY = 300;
 
-// Mirrors the real filter form: an ajax form with two filter inputs and a hidden but enabled
-// submit button (like perPage_submit), which makes the browser submit the form natively on Enter.
+// Mirrors the real filter form: an ajax form with two filter inputs, the per-page select and a hidden but
+// enabled submit button (like perPage_submit), which makes the browser submit the form natively on Enter.
 const html = `
 <div id="grid">
 	<form class="ajax" action="/filter" method="post">
 		<input type="text" name="filter[name]" data-autosubmit>
 		<input type="text" name="filter[email]" data-autosubmit>
 		<input type="text" name="filter[date]" data-autosubmit data-autosubmit-change>
+		<select name="perPage" data-autosubmit-per-page><option value="10">10</option><option value="20">20</option></select>
 		<input type="submit" name="perPage_submit" value="Go" style="visibility:hidden">
 	</form>
 </div>`;
@@ -19,6 +20,8 @@ const html = `
 async function mount(page) {
 	const requests = [];
 	await page.route('http://datagrid.test/', route => route.fulfill({contentType: 'text/html', body: html}));
+	// Another ajax request of the page, one that does not redraw the datagrid.
+	await page.route('http://datagrid.test/other', route => route.fulfill({contentType: 'application/json', body: '{}'}));
 	await page.route('http://datagrid.test/filter', async route => {
 		// Naja posts FormData as multipart/form-data
 		const body = route.request().postData() ?? '';
@@ -146,4 +149,75 @@ test('IME composition followed by commit submits the committed value once', asyn
 	await cdp.send('Input.insertText', {text: '日本'});
 	await settle(page);
 	expect(requests).toEqual(['日本']);
+});
+
+const requestOutsideDatagrid = page => page.evaluate(() => window.naja.makeRequest('GET', '/other', null, {history: false}));
+
+const changePerPage = page => page.selectOption('#grid select[name="perPage"]', '20');
+
+test('requests that do not redraw the datagrid do not make a per-page change submit more than once', async ({page}) => {
+	const {requests} = await mount(page);
+	for (let i = 0; i < 3; i++) {
+		await requestOutsideDatagrid(page);
+	}
+	await changePerPage(page);
+	await settle(page);
+	expect(requests).toHaveLength(1);
+});
+
+test('reinitializing the datagrid does not make a per-page change submit more than once', async ({page}) => {
+	const {requests} = await mount(page);
+	await page.evaluate(() => {
+		window.plugin.onDatagridInit(window.datagrid);
+		window.plugin.onDatagridInit(window.datagrid);
+	});
+	await requestOutsideDatagrid(page);
+	await changePerPage(page);
+	await settle(page);
+	expect(requests).toHaveLength(1);
+});
+
+test('a per-page select replaced by a redraw gets its listener and submits once', async ({page}) => {
+	const {requests} = await mount(page);
+	await requestOutsideDatagrid(page);
+	// A redraw of the pagination replaces the select; the request that brings it dispatches complete.
+	await page.evaluate(() => {
+		// A copy without the marker, as a freshly rendered select has none.
+		const select = document.querySelector('#grid select[name="perPage"]');
+		const redrawn = select.cloneNode(true);
+		delete redrawn.dataset.perPageListenersAttached;
+		select.replaceWith(redrawn);
+	});
+	await requestOutsideDatagrid(page);
+	await requestOutsideDatagrid(page);
+	await changePerPage(page);
+	await settle(page);
+	expect(requests).toHaveLength(1);
+});
+
+test('two datagrids on one page sharing the plugin and the ajax client submit their per-page select once', async ({page}) => {
+	const {requests} = await mount(page);
+	const secondRequests = [];
+	await page.route('http://datagrid.test/filter-second', async route => {
+		secondRequests.push(route.request().url());
+		await route.fulfill({contentType: 'application/json', body: '{}'});
+	});
+	await page.evaluate(() => {
+		const grid = document.createElement('div');
+		grid.id = 'second-grid';
+		grid.innerHTML = `<form class="ajax" action="/filter-second" method="post">
+			<select name="perPage" data-autosubmit-per-page><option value="10">10</option><option value="20">20</option></select>
+			<input type="submit" name="perPage_submit" value="Go" style="visibility:hidden">
+		</form>`;
+		document.body.append(grid);
+		window.plugin.onDatagridInit({el: grid, ajax: window.ajax});
+	});
+	for (let i = 0; i < 3; i++) {
+		await requestOutsideDatagrid(page);
+	}
+	await changePerPage(page);
+	await page.selectOption('#second-grid select[name="perPage"]', '20');
+	await settle(page);
+	expect(requests).toHaveLength(1);
+	expect(secondRequests).toHaveLength(1);
 });
